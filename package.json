@@ -1,0 +1,20 @@
+{
+  "name": "react-component-usage-finder",
+  "version": "1.0.0",
+  "description": "Find all the usages of a React component in a project",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@babel/parser": "^7.26.5",
+    "@babel/traverse": "^7.26.5",
+    "clipboardy": "^4.0.0",
+    "prompts": "^2.4.2",
+    "yargs": "^17.7.2"
+  }
+}
