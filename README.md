@@ -20,22 +20,26 @@ A command-line tool for analyzing React component usage hierarchies in your proj
 ## Installation
 
 1. Clone the repository:
+
 ```bash
 git clone <your-repo-url>
 cd react-component-usage-finder
 ```
 
 2. Install dependencies:
+
 ```bash
 npm install
 ```
 
 3. Make the script executable:
+
 ```bash
-chmod +x index.js
+chmod +x main.js
 ```
 
 4. Optional: Install globally to use from anywhere:
+
 ```bash
 npm install -g .
 ```
@@ -43,16 +47,19 @@ npm install -g .
 ## Usage
 
 ### Basic Usage
+
 ```bash
-node index.js -c ComponentName
+node main.js -c ComponentName
 ```
 
 ### Specify Directory
+
 ```bash
-node index.js -d /path/to/project -c ComponentName
+node main.js -d /path/to/project -c ComponentName
 ```
 
 ### If Installed Globally
+
 ```bash
 react-component-usage-finder -c ComponentName
 ```
