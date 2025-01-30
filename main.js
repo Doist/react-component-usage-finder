@@ -177,6 +177,69 @@ class TreeFormatter {
       0
     );
   }
+
+  getMarkdownList(hierarchy, parentPath = "") {
+    let result = "";
+    const currentPath = parentPath
+      ? `${parentPath} -> ${hierarchy.name}`
+      : hierarchy.name;
+
+    // If this is a leaf node (no further usages), add a list item
+    if (!hierarchy.usedIn || hierarchy.usedIn.length === 0) {
+      result += `- ${currentPath}\n`;
+    }
+
+    // Recursively process children
+    if (hierarchy.usedIn && hierarchy.usedIn.length > 0) {
+      hierarchy.usedIn.forEach((child) => {
+        result += this.getMarkdownList(child, currentPath);
+      });
+    }
+
+    return result;
+  }
+
+  getStatistics(hierarchy) {
+    const stats = {
+      totalComponents: new Set(),
+      maxDepth: 0,
+      leafNodes: 0,
+      uniqueFiles: new Set(),
+    };
+
+    this.calculateStats(hierarchy, 1, stats);
+
+    return {
+      totalComponents: stats.totalComponents.size,
+      maxDepth: stats.maxDepth,
+      leafNodes: stats.leafNodes,
+      uniqueFiles: stats.uniqueFiles.size,
+    };
+  }
+
+  calculateStats(node, depth, stats) {
+    stats.totalComponents.add(node.name);
+    stats.maxDepth = Math.max(stats.maxDepth, depth);
+    if (node.definedIn) {
+      stats.uniqueFiles.add(node.definedIn);
+    }
+
+    if (!node.usedIn || node.usedIn.length === 0) {
+      stats.leafNodes++;
+    } else {
+      node.usedIn.forEach((child) => {
+        this.calculateStats(child, depth + 1, stats);
+      });
+    }
+  }
+
+  formatSummary(stats) {
+    return `Summary:
+• Total unique components: ${stats.totalComponents}
+• Maximum depth: ${stats.maxDepth}
+• Leaf usages: ${stats.leafNodes}
+• Files involved: ${stats.uniqueFiles}\n`;
+  }
 }
 
 const argv = yargs(hideBin(process.argv))
@@ -193,6 +256,12 @@ const argv = yargs(hideBin(process.argv))
     demandOption: true,
     type: "string",
   })
+  .option("m", {
+    alias: "markdown",
+    describe: "Output as markdown list",
+    type: "boolean",
+    default: false,
+  })
   .help("h")
   .alias("h", "help").argv;
 
@@ -200,26 +269,61 @@ async function main() {
   try {
     const analyzer = new ComponentAnalyzer(argv.directory);
     const hierarchy = await analyzer.analyze(argv.component);
-
-    console.log("\nComponent Usage Tree:");
     const formatter = new TreeFormatter();
-    const treeOutput = formatter.formatHierarchy(hierarchy);
-    console.log(treeOutput);
 
-    const totalUsages = formatter.getLeafUsages(hierarchy);
-    console.log(`\nTotal leaf usages found: ${totalUsages}`);
+    // Calculate and display statistics
+    const stats = formatter.getStatistics(hierarchy);
+    console.log("\n" + formatter.formatSummary(stats));
 
-    const response = await prompts({
+    // Prompt for viewing the list
+    const viewResponse = await prompts([
+      {
+        type: "confirm",
+        name: "viewList",
+        message: "Would you like to see the detailed usage list?",
+        initial: true,
+      },
+      {
+        type: (prev) => (prev ? "select" : null),
+        name: "format",
+        message: "Select output format:",
+        choices: [
+          { title: "Tree view", value: "tree" },
+          { title: "Markdown list", value: "markdown" },
+        ],
+        initial: 0,
+      },
+    ]);
+
+    let output = "";
+    if (viewResponse.viewList) {
+      if (viewResponse.format === "markdown") {
+        output = formatter.getMarkdownList(hierarchy);
+        console.log("\nComponent Usage List:");
+      } else {
+        output = formatter.formatHierarchy(hierarchy);
+        console.log("\nComponent Usage Tree:");
+      }
+      console.log(output);
+    }
+
+    const clipboardResponse = await prompts({
       type: "confirm",
       name: "copyToClipboard",
       message: "Copy output to clipboard?",
       initial: false,
     });
 
-    if (response.copyToClipboard) {
-      const markdownOutput = `\`\`\`text\n${treeOutput}\`\`\``;
+    if (clipboardResponse.copyToClipboard) {
+      const markdownOutput =
+        viewResponse.format === "markdown"
+          ? `${formatter.formatSummary(stats)}\n${output}`
+          : `\`\`\`text\n${formatter.formatSummary(stats)}\n${output}\`\`\``;
       await clipboardy.write(markdownOutput);
-      console.log("\n✓ Copied to clipboard in markdown format");
+      console.log(
+        "\n✓ Copied to clipboard" +
+          (viewResponse.format === "markdown" ? "" : " in markdown format")
+      );
     }
   } catch (error) {
     console.error("Error:", error);
