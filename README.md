@@ -68,6 +68,7 @@ react-component-usage-finder -c ComponentName
 
 - `-c, --component`: Name of the component to analyze (required)
 - `-d, --directory`: Root directory to scan (defaults to current directory)
+- `-m, --markdown`: Output as markdown list
 - `-h, --help`: Show help
 
 ## Output Example
