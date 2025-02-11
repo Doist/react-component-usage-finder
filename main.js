@@ -235,32 +235,49 @@ function getMarkdownList(
   firstUsageLocation = null
 ) {
   let result = "";
-  const currentPath = parentPath
-    ? `${parentPath} -> ${hierarchy.name}`
-    : hierarchy.name;
+  const pathsByLocation = new Map();
+  let totalPaths = 0; // Add counter for verification
 
-  // Only output leaf nodes (components that aren't used by other components)
-  if (!hierarchy.usedIn || hierarchy.usedIn.length === 0) {
-    const usageLocation = firstUsageLocation
-      ? ` (${path.relative(process.cwd(), firstUsageLocation.file)}:${
-          firstUsageLocation.line
-        })`
-      : "";
-    result += `- ${currentPath}${usageLocation}\n`;
-  } else {
-    // Continue traversing the tree
-    hierarchy.usedIn.forEach((child) => {
-      // If this is the root component (Link), look for where it's used in its child
-      const nextLocation =
-        !parentPath &&
-        hierarchy.locations?.find((loc) => loc.file === child.definedIn);
-      result += getMarkdownList(
-        child,
-        currentPath,
-        nextLocation || firstUsageLocation
-      );
+  function addPath(path, location) {
+    const locationKey = location
+      ? `${location.file}:${location.line}`
+      : "unknown";
+    if (!pathsByLocation.has(locationKey)) {
+      pathsByLocation.set(locationKey, []);
+    }
+    pathsByLocation.get(locationKey).push(path);
+    totalPaths++; // Increment counter
+  }
+
+  function processHierarchy(node, currentPath, usageLocation) {
+    const newPath = currentPath ? `${currentPath} -> ${node.name}` : node.name;
+
+    if (!node.usedIn || node.usedIn.length === 0) {
+      addPath(newPath, usageLocation);
+    } else {
+      node.usedIn.forEach((child) => {
+        const nextLocation =
+          !currentPath &&
+          node.locations?.find((loc) => loc.file === child.definedIn);
+        processHierarchy(child, newPath, nextLocation || usageLocation);
+      });
+    }
+  }
+
+  processHierarchy(hierarchy, parentPath, firstUsageLocation);
+
+  // Format the output with grouped paths
+  for (const [location, paths] of pathsByLocation) {
+    result += `- Paths to ${location}:\n`;
+    paths.forEach((path) => {
+      result += `  • ${path}\n`;
     });
   }
+
+  // Add verification info
+  let groupedTotal = 0;
+  pathsByLocation.forEach((paths) => (groupedTotal += paths.length));
+  result += `\nVerification: Found ${totalPaths} total paths, grouped into ${pathsByLocation.size} locations (${groupedTotal} total paths in groups)\n`;
 
   return result;
 }
