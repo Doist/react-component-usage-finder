@@ -12,234 +12,333 @@ import clipboardy from "clipboardy";
 
 const traverse = _traverse.default;
 
-class ComponentAnalyzer {
-  constructor(rootDir) {
-    this.rootDir = rootDir;
-    this.componentUsages = new Map();
-    this.componentDefinitions = new Map();
-  }
+/** Tree characters used for formatting the component hierarchy */
+const treeChars = {
+  corner: "└── ",
+  pipe: "│   ",
+  tee: "├── ",
+  blank: "    ",
+};
 
-  async analyze(targetComponent) {
-    await this.scanDirectory(this.rootDir);
-    return this.getUsageHierarchy(targetComponent);
-  }
+/**
+ * Checks if a string follows PascalCase naming convention
+ * @param {string} str - The string to check
+ * @returns {boolean} True if string is PascalCase
+ */
+function isPascalCase(str) {
+  return /^[A-Z][A-Za-z0-9]*$/.test(str);
+}
 
-  async scanDirectory(dir) {
-    const files = await fs.readdir(dir);
+/**
+ * Determines if an AST node represents a React component
+ * @param {Object} node - The AST node to check
+ * @returns {boolean} True if node is a React component declaration
+ */
+function isReactComponent(node) {
+  return (
+    node.type === "FunctionDeclaration" &&
+    isPascalCase(node.id.name) &&
+    node.params.length <= 1
+  );
+}
 
-    for (const file of files) {
-      const fullPath = path.join(dir, file);
-      const stat = await fs.stat(fullPath);
+/**
+ * Checks if a directory path should be ignored during scanning
+ * @param {string} dirPath - The directory path to check
+ * @returns {boolean} True if directory should be ignored
+ */
+function isNodeModulesOrBuild(dirPath) {
+  const ignoredDirs = ["node_modules", "build", "dist", ".git"];
+  return ignoredDirs.some((dir) => dirPath.includes(dir));
+}
 
-      if (stat.isDirectory() && !this.isNodeModulesOrBuild(fullPath)) {
-        await this.scanDirectory(fullPath);
-      } else if (this.isReactFile(file)) {
-        await this.analyzeFile(fullPath);
-      }
-    }
-  }
+/**
+ * Determines if a file is a React component file
+ * @param {string} file - The filename to check
+ * @returns {boolean} True if file is a React component file
+ */
+function isReactFile(file) {
+  const testPattern = /\.(test|spec|stories)\.(js|jsx|tsx|ts)$/;
+  return (
+    file.match(/\.(js|jsx|tsx|ts)$/) &&
+    !file.endsWith(".d.ts") &&
+    !testPattern.test(file)
+  );
+}
 
-  isNodeModulesOrBuild(dirPath) {
-    const ignoredDirs = ["node_modules", "build", "dist", ".git"];
-    return ignoredDirs.some((dir) => dirPath.includes(dir));
-  }
+/**
+ * Analyzes a single file for React component definitions and usages
+ * @param {string} filePath - Path to the file to analyze
+ * @param {Map} componentUsages - Map to store component usage information
+ * @param {Map} componentDefinitions - Map to store component definition locations
+ */
+async function analyzeFile(filePath, componentUsages, componentDefinitions) {
+  const content = await fs.readFile(filePath, "utf-8");
 
-  isReactFile(file) {
-    return file.match(/\.(js|jsx|tsx|ts)$/) && !file.endsWith(".d.ts");
-  }
+  try {
+    const ast = parser.parse(content, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript", "decorators-legacy"],
+    });
 
-  async analyzeFile(filePath) {
-    const content = await fs.readFile(filePath, "utf-8");
+    let currentComponent = null;
 
-    try {
-      const ast = parser.parse(content, {
-        sourceType: "module",
-        plugins: ["jsx", "typescript", "decorators-legacy"],
-      });
+    traverse(ast, {
+      FunctionDeclaration: (path) => {
+        if (isReactComponent(path.node)) {
+          currentComponent = path.node.id.name;
+          componentDefinitions.set(currentComponent, filePath);
+        }
+      },
 
-      let currentComponent = null;
+      VariableDeclarator: (path) => {
+        if (
+          path.node.init &&
+          (path.node.init.type === "ArrowFunctionExpression" ||
+            path.node.init.type === "FunctionExpression") &&
+          path.node.id.type === "Identifier" &&
+          isPascalCase(path.node.id.name)
+        ) {
+          currentComponent = path.node.id.name;
+          componentDefinitions.set(currentComponent, filePath);
+        }
+      },
 
-      traverse(ast, {
-        FunctionDeclaration: (path) => {
-          if (this.isReactComponent(path.node)) {
-            currentComponent = path.node.id.name;
-            this.componentDefinitions.set(currentComponent, filePath);
+      JSXElement: (path) => {
+        const elementName = path.node.openingElement.name.name;
+        if (isPascalCase(elementName)) {
+          if (!componentUsages.has(elementName)) {
+            componentUsages.set(elementName, new Set());
           }
-        },
-
-        VariableDeclarator: (path) => {
-          if (
-            path.node.init &&
-            (path.node.init.type === "ArrowFunctionExpression" ||
-              path.node.init.type === "FunctionExpression") &&
-            path.node.id.type === "Identifier" &&
-            this.isPascalCase(path.node.id.name)
-          ) {
-            currentComponent = path.node.id.name;
-            this.componentDefinitions.set(currentComponent, filePath);
+          if (currentComponent) {
+            componentUsages.get(elementName).add({
+              component: currentComponent,
+              file: filePath,
+              line: path.node.loc.start.line,
+            });
           }
-        },
-
-        JSXElement: (path) => {
-          const elementName = path.node.openingElement.name.name;
-          if (this.isPascalCase(elementName)) {
-            if (!this.componentUsages.has(elementName)) {
-              this.componentUsages.set(elementName, new Set());
-            }
-            if (currentComponent) {
-              this.componentUsages.get(elementName).add(currentComponent);
-            }
-          }
-        },
-      });
-    } catch (error) {
-      console.error(`Error analyzing ${filePath}:`, error);
-    }
-  }
-
-  getUsageHierarchy(componentName, visited = new Set()) {
-    if (visited.has(componentName)) {
-      return { name: componentName, usedIn: ["Circular Reference"] };
-    }
-
-    visited.add(componentName);
-
-    const usages = this.componentUsages.get(componentName) || new Set();
-    const hierarchy = {
-      name: componentName,
-      definedIn: this.componentDefinitions.get(componentName),
-      usedIn: Array.from(usages).map((parent) =>
-        this.getUsageHierarchy(parent, new Set(visited))
-      ),
-    };
-
-    return hierarchy;
-  }
-
-  isPascalCase(str) {
-    return /^[A-Z][A-Za-z0-9]*$/.test(str);
-  }
-
-  isReactComponent(node) {
-    return (
-      node.type === "FunctionDeclaration" &&
-      this.isPascalCase(node.id.name) &&
-      node.params.length <= 1
-    );
+        }
+      },
+    });
+  } catch (error) {
+    console.error(`Error analyzing ${filePath}:`, error);
   }
 }
 
-class TreeFormatter {
-  constructor() {
-    this.treeChars = {
-      corner: "└── ",
-      pipe: "│   ",
-      tee: "├── ",
-      blank: "    ",
-    };
+/**
+ * Recursively scans a directory for React component files
+ * @param {string} dir - Directory to scan
+ * @param {Map} componentUsages - Map to store component usage information
+ * @param {Map} componentDefinitions - Map to store component definition locations
+ */
+async function scanDirectory(dir, componentUsages, componentDefinitions) {
+  const files = await fs.readdir(dir);
+
+  for (const file of files) {
+    const fullPath = path.join(dir, file);
+    const stat = await fs.stat(fullPath);
+
+    if (stat.isDirectory() && !isNodeModulesOrBuild(fullPath)) {
+      await scanDirectory(fullPath, componentUsages, componentDefinitions);
+    } else if (isReactFile(file)) {
+      await analyzeFile(fullPath, componentUsages, componentDefinitions);
+    }
+  }
+}
+
+/**
+ * Builds a hierarchy of component usages
+ * @param {string} componentName - Name of the component to analyze
+ * @param {Map} componentUsages - Map of component usage information
+ * @param {Map} componentDefinitions - Map of component definition locations
+ * @param {Set} visited - Set of visited components (for circular reference detection)
+ * @returns {Object} Hierarchy object representing component usage
+ */
+function getUsageHierarchy(
+  componentName,
+  componentUsages,
+  componentDefinitions,
+  visited = new Set()
+) {
+  if (visited.has(componentName)) {
+    return { name: componentName, usedIn: ["Circular Reference"] };
   }
 
-  formatHierarchy(hierarchy, prefix = "", isLast = true) {
-    let result = "";
+  visited.add(componentName);
 
-    // Format current node
-    const connector = isLast ? this.treeChars.corner : this.treeChars.tee;
-    const componentName = hierarchy.name;
-    const definedIn = hierarchy.definedIn
-      ? ` (${path.relative(process.cwd(), hierarchy.definedIn)})`
-      : "";
+  const usages = componentUsages.get(componentName) || new Set();
+  const hierarchy = {
+    name: componentName,
+    definedIn: componentDefinitions.get(componentName),
+    usedIn: Array.from(usages).map((usage) =>
+      getUsageHierarchy(
+        usage.component,
+        componentUsages,
+        componentDefinitions,
+        new Set(visited)
+      )
+    ),
+    locations: Array.from(usages).map((usage) => ({
+      file: usage.file,
+      line: usage.line,
+    })),
+  };
 
-    result += `${prefix}${connector}${componentName}${definedIn}\n`;
+  return hierarchy;
+}
 
-    // Format children
-    const childPrefix =
-      prefix + (isLast ? this.treeChars.blank : this.treeChars.pipe);
+/**
+ * Formats a component hierarchy as a tree string
+ * @param {Object} hierarchy - Component hierarchy object
+ * @param {string} prefix - Current line prefix for tree formatting
+ * @param {boolean} isLast - Whether this is the last item in its branch
+ * @returns {string} Formatted tree string
+ */
+function formatHierarchy(hierarchy, prefix = "", isLast = true) {
+  let result = "";
 
-    if (hierarchy.usedIn && hierarchy.usedIn.length > 0) {
-      hierarchy.usedIn.forEach((child, index) => {
-        const isLastChild = index === hierarchy.usedIn.length - 1;
-        result += this.formatHierarchy(child, childPrefix, isLastChild);
+  const connector = isLast ? treeChars.corner : treeChars.tee;
+  const componentName = hierarchy.name;
+  const definedIn = hierarchy.definedIn
+    ? ` (${path.relative(process.cwd(), hierarchy.definedIn)})`
+    : "";
+
+  result += `${prefix}${connector}${componentName}${definedIn}\n`;
+
+  if (hierarchy.locations && hierarchy.locations.length > 0) {
+    const locationPrefix = prefix + (isLast ? treeChars.blank : treeChars.pipe);
+    hierarchy.locations.forEach((loc) => {
+      result += `${locationPrefix}${treeChars.pipe}Used at: ${path.relative(
+        process.cwd(),
+        loc.file
+      )}:${loc.line}\n`;
+    });
+  }
+
+  const childPrefix = prefix + (isLast ? treeChars.blank : treeChars.pipe);
+
+  if (hierarchy.usedIn && hierarchy.usedIn.length > 0) {
+    hierarchy.usedIn.forEach((child, index) => {
+      const isLastChild = index === hierarchy.usedIn.length - 1;
+      result += formatHierarchy(child, childPrefix, isLastChild);
+    });
+  }
+
+  return result;
+}
+
+/**
+ * Formats a component hierarchy as a markdown list
+ * @param {Object} hierarchy - Component hierarchy object
+ * @param {string} parentPath - Current path in the component tree
+ * @returns {string} Formatted markdown list
+ */
+function getMarkdownList(hierarchy, parentPath = "") {
+  let result = "";
+  const currentPath = parentPath
+    ? `${parentPath} -> ${hierarchy.name}`
+    : hierarchy.name;
+
+  const definedIn = hierarchy.definedIn
+    ? ` (defined in ${path.relative(process.cwd(), hierarchy.definedIn)})`
+    : "";
+
+  if (!hierarchy.usedIn || hierarchy.usedIn.length === 0) {
+    result += `- ${currentPath}${definedIn}\n`;
+    if (hierarchy.locations) {
+      hierarchy.locations.forEach((loc) => {
+        result += `  - Used at: ${path.relative(process.cwd(), loc.file)}:${
+          loc.line
+        }\n`;
       });
     }
-
-    return result;
+  } else {
+    result += `- ${currentPath}${definedIn}\n`;
   }
 
-  getLeafUsages(hierarchy) {
-    // If there are no children, this is a leaf node
-    if (!hierarchy.usedIn || hierarchy.usedIn.length === 0) {
-      return 1;
-    }
-
-    // If there are children, recursively count their leaves
-    return hierarchy.usedIn.reduce(
-      (sum, child) => sum + this.getLeafUsages(child),
-      0
-    );
+  if (hierarchy.usedIn && hierarchy.usedIn.length > 0) {
+    hierarchy.usedIn.forEach((child) => {
+      result += getMarkdownList(child, currentPath);
+    });
   }
 
-  getMarkdownList(hierarchy, parentPath = "") {
-    let result = "";
-    const currentPath = parentPath
-      ? `${parentPath} -> ${hierarchy.name}`
-      : hierarchy.name;
+  return result;
+}
 
-    // If this is a leaf node (no further usages), add a list item
-    if (!hierarchy.usedIn || hierarchy.usedIn.length === 0) {
-      result += `- ${currentPath}\n`;
-    }
-
-    // Recursively process children
-    if (hierarchy.usedIn && hierarchy.usedIn.length > 0) {
-      hierarchy.usedIn.forEach((child) => {
-        result += this.getMarkdownList(child, currentPath);
-      });
-    }
-
-    return result;
+/**
+ * Calculates statistics for a component hierarchy
+ * @param {Object} node - Current node in the hierarchy
+ * @param {number} depth - Current depth in the tree
+ * @param {Object} stats - Statistics object to update
+ */
+function calculateStats(node, depth, stats) {
+  stats.totalComponents.add(node.name);
+  stats.maxDepth = Math.max(stats.maxDepth, depth);
+  if (node.definedIn) {
+    stats.uniqueFiles.add(node.definedIn);
   }
 
-  getStatistics(hierarchy) {
-    const stats = {
-      totalComponents: new Set(),
-      maxDepth: 0,
-      leafNodes: 0,
-      uniqueFiles: new Set(),
-    };
-
-    this.calculateStats(hierarchy, 1, stats);
-
-    return {
-      totalComponents: stats.totalComponents.size,
-      maxDepth: stats.maxDepth,
-      leafNodes: stats.leafNodes,
-      uniqueFiles: stats.uniqueFiles.size,
-    };
+  if (!node.usedIn || node.usedIn.length === 0) {
+    stats.leafNodes++;
+  } else {
+    node.usedIn.forEach((child) => {
+      calculateStats(child, depth + 1, stats);
+    });
   }
+}
 
-  calculateStats(node, depth, stats) {
-    stats.totalComponents.add(node.name);
-    stats.maxDepth = Math.max(stats.maxDepth, depth);
-    if (node.definedIn) {
-      stats.uniqueFiles.add(node.definedIn);
-    }
+/**
+ * Gets statistics for a component hierarchy
+ * @param {Object} hierarchy - Component hierarchy object
+ * @returns {Object} Statistics about the component hierarchy
+ */
+function getStatistics(hierarchy) {
+  const stats = {
+    totalComponents: new Set(),
+    maxDepth: 0,
+    leafNodes: 0,
+    uniqueFiles: new Set(),
+  };
 
-    if (!node.usedIn || node.usedIn.length === 0) {
-      stats.leafNodes++;
-    } else {
-      node.usedIn.forEach((child) => {
-        this.calculateStats(child, depth + 1, stats);
-      });
-    }
-  }
+  calculateStats(hierarchy, 1, stats);
 
-  formatSummary(stats) {
-    return `Summary:
+  return {
+    totalComponents: stats.totalComponents.size,
+    maxDepth: stats.maxDepth,
+    leafNodes: stats.leafNodes,
+    uniqueFiles: stats.uniqueFiles.size,
+  };
+}
+
+/**
+ * Formats statistics as a summary string
+ * @param {Object} stats - Statistics object
+ * @returns {string} Formatted summary
+ */
+function formatSummary(stats) {
+  return `Summary:
 • Total unique components: ${stats.totalComponents}
 • Maximum depth: ${stats.maxDepth}
 • Leaf usages: ${stats.leafNodes}
 • Files involved: ${stats.uniqueFiles}\n`;
-  }
+}
+
+/**
+ * Main analysis function that scans a directory and builds component hierarchy
+ * @param {string} rootDir - Root directory to scan
+ * @param {string} targetComponent - Name of the component to analyze
+ * @returns {Promise<Object>} Component hierarchy object
+ */
+async function analyze(rootDir, targetComponent) {
+  const componentUsages = new Map();
+  const componentDefinitions = new Map();
+
+  await scanDirectory(rootDir, componentUsages, componentDefinitions);
+  return getUsageHierarchy(
+    targetComponent,
+    componentUsages,
+    componentDefinitions
+  );
 }
 
 const argv = yargs(hideBin(process.argv))
@@ -265,17 +364,15 @@ const argv = yargs(hideBin(process.argv))
   .help("h")
   .alias("h", "help").argv;
 
+/**
+ * Main CLI function
+ */
 async function main() {
   try {
-    const analyzer = new ComponentAnalyzer(argv.directory);
-    const hierarchy = await analyzer.analyze(argv.component);
-    const formatter = new TreeFormatter();
+    const hierarchy = await analyze(argv.directory, argv.component);
+    const stats = getStatistics(hierarchy);
+    console.log("\n" + formatSummary(stats));
 
-    // Calculate and display statistics
-    const stats = formatter.getStatistics(hierarchy);
-    console.log("\n" + formatter.formatSummary(stats));
-
-    // Prompt for viewing the list
     const viewResponse = await prompts([
       {
         type: "confirm",
@@ -298,10 +395,10 @@ async function main() {
     let output = "";
     if (viewResponse.viewList) {
       if (viewResponse.format === "markdown") {
-        output = formatter.getMarkdownList(hierarchy);
+        output = getMarkdownList(hierarchy);
         console.log("\nComponent Usage List:");
       } else {
-        output = formatter.formatHierarchy(hierarchy);
+        output = formatHierarchy(hierarchy);
         console.log("\nComponent Usage Tree:");
       }
       console.log(output);
@@ -317,8 +414,8 @@ async function main() {
     if (clipboardResponse.copyToClipboard) {
       const markdownOutput =
         viewResponse.format === "markdown"
-          ? `${formatter.formatSummary(stats)}\n${output}`
-          : `\`\`\`text\n${formatter.formatSummary(stats)}\n${output}\`\`\``;
+          ? `${formatSummary(stats)}\n${output}`
+          : `\`\`\`text\n${formatSummary(stats)}\n${output}\`\`\``;
       await clipboardy.write(markdownOutput);
       console.log(
         "\n✓ Copied to clipboard" +
@@ -335,4 +432,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main();
 }
 
-export { ComponentAnalyzer, TreeFormatter };
+export { analyze, formatHierarchy, getMarkdownList };
