@@ -223,17 +223,13 @@ function formatHierarchy(hierarchy, prefix = "", isLast = true) {
 }
 
 /**
- * Formats a component hierarchy as a markdown list, showing only complete paths
+ * Formats a component hierarchy as a list, showing complete paths grouped by location
  * @param {Object} hierarchy - Component hierarchy object
  * @param {string} parentPath - Current path in the component tree
  * @param {Object|null} firstUsageLocation - Location where the first child component uses the target
- * @returns {string} Formatted markdown list
+ * @returns {string} Formatted list
  */
-function getMarkdownList(
-  hierarchy,
-  parentPath = "",
-  firstUsageLocation = null
-) {
+function getList(hierarchy, parentPath = "", firstUsageLocation = null) {
   let result = "";
   const pathsByLocation = new Map();
   let totalPaths = 0; // Add counter for verification
@@ -268,16 +264,12 @@ function getMarkdownList(
 
   // Format the output with grouped paths
   for (const [location, paths] of pathsByLocation) {
-    result += `- Paths to ${location}:\n`;
+    result += `### Paths to ${location}\n\n`;
     paths.forEach((path) => {
-      result += `  • ${path}\n`;
+      result += `* ${path}\n`;
     });
+    result += "\n";
   }
-
-  // Add verification info
-  let groupedTotal = 0;
-  pathsByLocation.forEach((paths) => (groupedTotal += paths.length));
-  result += `\nVerification: Found ${totalPaths} total paths, grouped into ${pathsByLocation.size} locations (${groupedTotal} total paths in groups)\n`;
 
   return result;
 }
@@ -409,7 +401,7 @@ async function main() {
         message: "Select output format:",
         choices: [
           { title: "Tree view", value: "tree" },
-          { title: "Markdown list", value: "markdown" },
+          { title: "List", value: "markdown" },
         ],
         initial: 0,
       },
@@ -418,7 +410,7 @@ async function main() {
     let output = "";
     if (viewResponse.viewList) {
       if (viewResponse.format === "markdown") {
-        output = getMarkdownList(hierarchy);
+        output = getList(hierarchy);
         console.log("\nComponent Usage List:");
       } else {
         output = formatHierarchy(hierarchy);
@@ -455,4 +447,4 @@ if (process.argv[1] === fileURLToPath(import.meta.url)) {
   main();
 }
 
-export { analyze, formatHierarchy, getMarkdownList };
+export { analyze, formatHierarchy, getList };
