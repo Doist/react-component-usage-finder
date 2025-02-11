@@ -199,21 +199,16 @@ function formatHierarchy(hierarchy, prefix = "", isLast = true) {
 
   const connector = isLast ? treeChars.corner : treeChars.tee;
   const componentName = hierarchy.name;
-  const definedIn = hierarchy.definedIn
-    ? ` (${path.relative(process.cwd(), hierarchy.definedIn)})`
-    : "";
 
-  result += `${prefix}${connector}${componentName}${definedIn}\n`;
+  // Show the location where this component is used
+  const usageLocation =
+    hierarchy.locations && hierarchy.locations[0]
+      ? ` (${path.relative(process.cwd(), hierarchy.locations[0].file)}:${
+          hierarchy.locations[0].line
+        })`
+      : "";
 
-  if (hierarchy.locations && hierarchy.locations.length > 0) {
-    const locationPrefix = prefix + (isLast ? treeChars.blank : treeChars.pipe);
-    hierarchy.locations.forEach((loc) => {
-      result += `${locationPrefix}${treeChars.pipe}Used at: ${path.relative(
-        process.cwd(),
-        loc.file
-      )}:${loc.line}\n`;
-    });
-  }
+  result += `${prefix}${connector}${componentName}${usageLocation}\n`;
 
   const childPrefix = prefix + (isLast ? treeChars.blank : treeChars.pipe);
 
@@ -228,37 +223,42 @@ function formatHierarchy(hierarchy, prefix = "", isLast = true) {
 }
 
 /**
- * Formats a component hierarchy as a markdown list
+ * Formats a component hierarchy as a markdown list, showing only complete paths
  * @param {Object} hierarchy - Component hierarchy object
  * @param {string} parentPath - Current path in the component tree
+ * @param {Object|null} firstUsageLocation - Location where the first child component uses the target
  * @returns {string} Formatted markdown list
  */
-function getMarkdownList(hierarchy, parentPath = "") {
+function getMarkdownList(
+  hierarchy,
+  parentPath = "",
+  firstUsageLocation = null
+) {
   let result = "";
   const currentPath = parentPath
     ? `${parentPath} -> ${hierarchy.name}`
     : hierarchy.name;
 
-  const definedIn = hierarchy.definedIn
-    ? ` (defined in ${path.relative(process.cwd(), hierarchy.definedIn)})`
-    : "";
-
+  // Only output leaf nodes (components that aren't used by other components)
   if (!hierarchy.usedIn || hierarchy.usedIn.length === 0) {
-    result += `- ${currentPath}${definedIn}\n`;
-    if (hierarchy.locations) {
-      hierarchy.locations.forEach((loc) => {
-        result += `  - Used at: ${path.relative(process.cwd(), loc.file)}:${
-          loc.line
-        }\n`;
-      });
-    }
+    const usageLocation = firstUsageLocation
+      ? ` (${path.relative(process.cwd(), firstUsageLocation.file)}:${
+          firstUsageLocation.line
+        })`
+      : "";
+    result += `- ${currentPath}${usageLocation}\n`;
   } else {
-    result += `- ${currentPath}${definedIn}\n`;
-  }
-
-  if (hierarchy.usedIn && hierarchy.usedIn.length > 0) {
+    // Continue traversing the tree
     hierarchy.usedIn.forEach((child) => {
-      result += getMarkdownList(child, currentPath);
+      // If this is the root component (Link), look for where it's used in its child
+      const nextLocation =
+        !parentPath &&
+        hierarchy.locations?.find((loc) => loc.file === child.definedIn);
+      result += getMarkdownList(
+        child,
+        currentPath,
+        nextLocation || firstUsageLocation
+      );
     });
   }
 
@@ -270,19 +270,26 @@ function getMarkdownList(hierarchy, parentPath = "") {
  * @param {Object} node - Current node in the hierarchy
  * @param {number} depth - Current depth in the tree
  * @param {Object} stats - Statistics object to update
+ * @param {Array} currentPath - Array of components in current path
  */
-function calculateStats(node, depth, stats) {
-  stats.totalComponents.add(node.name);
-  stats.maxDepth = Math.max(stats.maxDepth, depth);
-  if (node.definedIn) {
-    stats.uniqueFiles.add(node.definedIn);
-  }
+function calculateStats(node, depth, stats, currentPath = []) {
+  currentPath.push(node.name);
 
   if (!node.usedIn || node.usedIn.length === 0) {
+    // Store the complete path as a string, excluding the target component itself
+    const pathString = currentPath.slice(1).join(" -> ");
+    if (pathString) {
+      stats.uniquePaths.add(pathString);
+    }
+
+    stats.maxDepth = Math.max(stats.maxDepth, depth);
+    if (node.definedIn) {
+      stats.uniqueFiles.add(node.definedIn);
+    }
     stats.leafNodes++;
   } else {
     node.usedIn.forEach((child) => {
-      calculateStats(child, depth + 1, stats);
+      calculateStats(child, depth + 1, stats, [...currentPath]);
     });
   }
 }
@@ -294,7 +301,7 @@ function calculateStats(node, depth, stats) {
  */
 function getStatistics(hierarchy) {
   const stats = {
-    totalComponents: new Set(),
+    uniquePaths: new Set(),
     maxDepth: 0,
     leafNodes: 0,
     uniqueFiles: new Set(),
@@ -303,7 +310,7 @@ function getStatistics(hierarchy) {
   calculateStats(hierarchy, 1, stats);
 
   return {
-    totalComponents: stats.totalComponents.size,
+    uniquePaths: stats.uniquePaths.size,
     maxDepth: stats.maxDepth,
     leafNodes: stats.leafNodes,
     uniqueFiles: stats.uniqueFiles.size,
@@ -317,9 +324,8 @@ function getStatistics(hierarchy) {
  */
 function formatSummary(stats) {
   return `Summary:
-• Total unique components: ${stats.totalComponents}
+• Unique usage paths: ${stats.uniquePaths}
 • Maximum depth: ${stats.maxDepth}
-• Leaf usages: ${stats.leafNodes}
 • Files involved: ${stats.uniqueFiles}\n`;
 }
 
